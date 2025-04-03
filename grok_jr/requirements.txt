@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+transformers
+qdrant-client
+sentence-transformers
+openai-whisper
+gTTS
+pyttsx3
+pyaudio
+pydub
+websockets
+docker
+pydantic_settings
+accelerate
+python-dotenv
+pygame
+bitsandbytes

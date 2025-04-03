@@ -1,0 +1,22 @@
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+
+uvicorn grok_jr.app.main:app --host 0.0.0.0 --port 8080
+
+docker run -d --name qdrant -p 6333:6333 qdrant/qdrant:latest
+./qdrant-init.sh
+
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519_americanworx
+ssh -T git@github.com
+
+
+    -   A local model handles all user interactions, ensuring offline capability.
+    -   When online , the local model relays the user prompt and its own inference to Grok .
+    -   Grok merges the user prompt and local inference into a coherent response, which is returned to the user.
+    -   A memory layer captures all interactions for learning and context management.
+    -   Capture actual and target inference is useful for fine tuning.
+
+    execute skill scan network with ip_range=192.168.100.0/24 {'ip_range': '192.168.100.0/24'}

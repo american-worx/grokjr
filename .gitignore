@@ -1,0 +1,12 @@
+*.db
+grok_jr_venv
+grokjr-env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+speech/
+qdrant_data
+qdrant_storage
+info.txt
