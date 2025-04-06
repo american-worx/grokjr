@@ -6,7 +6,7 @@ __pycache__/
 *.pyo
 *.pyd
 .env
-speech/
+
 qdrant_data
 qdrant_storage
 info.txt
