@@ -21,11 +21,13 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "tiny"
     TTS_ENGINE: str = "gTTS"  # Fallback to "pyttsx3" if offline
     SPEECH_DIR: str = "speech/"
+    # Swarm settings
+    SWARM_MODE: bool = False  # Default: off
+    SWARM_TIMEOUT: int = 5    # Seconds to wait for agent response
 
     class Config:
-        env_file = ".env"  # Still keep this for Pydantic, but it’s now redundant
+        env_file = ".env"
         env_file_encoding = "utf-8"
 
-# Debug: Print the loaded XAI_API_KEY to verify
 settings = Settings()
 print(f"Loaded XAI_API_KEY: {settings.XAI_API_KEY}")

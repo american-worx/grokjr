@@ -3,9 +3,11 @@ sudo apt-get install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 
-uvicorn grok_jr.app.main:app --host 0.0.0.0 --port 8080
+uvicorn grok_jr.app.main:app --host 0.0.0.0 --port 8000
 
-docker run -d --name qdrant -p 6333:6333 qdrant/qdrant:latest
+docker run -d --name qdrant -p 6333:6333 -v $(pwd)/qdrant_data:/qdrant/storage qdrant/qdrant:latest
+
+
 ./qdrant-init.sh
 
 eval "$(ssh-agent -s)"
@@ -20,3 +22,6 @@ ssh -T git@github.com
     -   Capture actual and target inference is useful for fine tuning.
 
     execute skill scan network with ip_range=192.168.100.0/24 {'ip_range': '192.168.100.0/24'}
+
+
+    execute skill skill_8, {'action':'set_goal'}

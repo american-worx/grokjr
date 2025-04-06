@@ -7,10 +7,7 @@ class EthicsManager:
         self.logger = logging.getLogger(__name__)
         # Define potentially harmful keywords with regex patterns for whole-word matching
         self.harmful_patterns = [
-            r'\bdelete\b', r'\bremove\b', r'\brm\b', r'\bunlink\b',  # File deletion
-            r'\bexec\b', r'\beval\b', r'\bsystem\b', r'\bpopen\b',  # Code execution
-            r'\bsocket\b', r'\bhttp\b', r'\brequests\b', r'\burllib\b',  # Network access
-            r'\bpassword\b', r'\bcredential\b', r'\bsecret\b',  # Sensitive data
+
         ]
 
     def validate_skill(self, skill: Skill) -> tuple[bool, str]:

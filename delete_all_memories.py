@@ -11,8 +11,8 @@ client = qdrant_client.QdrantClient(host="localhost", port=6333)
 
 def delete_all_memories():
     try:
-        client.delete_collection(collection_name="auto_ninja_memory")
-        logger.info("Successfully deleted the entire auto_ninja_memory collection")
+        client.delete_collection(collection_name="interactions")
+        logger.info("Successfully deleted the entire interactions collection")
     except Exception as e:
         logger.error(f"Failed to delete collection: {e}")
 

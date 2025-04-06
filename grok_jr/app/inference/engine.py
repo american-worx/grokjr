@@ -1,10 +1,10 @@
 import logging
 import requests
-from grok_jr.app.config.settings import settings
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from grok_jr.app.config.settings import settings
 
-# In app/inference/engine.py
+logger = logging.getLogger(__name__)
 
 class InferenceEngine:
     def __init__(self):
@@ -23,34 +23,55 @@ class InferenceEngine:
         )
         self.local_model = None
         self.local_tokenizer = None
-        self.is_autonomous = False  # For autonomous mode toggle
+        self.is_autonomous = False
         self._load_local_model()
 
     def _load_local_model(self):
-        """Load the local gemma-3-1b-it model with 4-bit quantization."""
+        """Load the local gemma-3-1b-it model with 4-bit quantization, defaulting to CUDA with CPU fallback."""
         if not self.hf_token:
             self.logger.warning("HF_TOKEN not set. Local inference unavailable.")
             return
+
+        self.logger.info("Loading local model gemma-3-1b-it with 4-bit quantization...")
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
+
         try:
-            self.logger.info("Loading local model gemma-3-1b-it with 4-bit quantization...")
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-            )
+            # Load tokenizer
             self.local_tokenizer = AutoTokenizer.from_pretrained(
                 "google/gemma-3-1b-it",
                 token=self.hf_token
             )
-            self.local_model = AutoModelForCausalLM.from_pretrained(
-                "google/gemma-3-1b-it",
-                token=self.hf_token,
-                quantization_config=quantization_config,
-                device_map="auto"
-            )
-            self.logger.info("Local model loaded successfully.")
-            self._log_gpu_memory()
+
+            # Try CUDA first
+            try:
+                self.local_model = AutoModelForCausalLM.from_pretrained(
+                    "google/gemma-3-1b-it",
+                    token=self.hf_token,
+                    quantization_config=quantization_config,
+                    device_map="cuda"  # Explicit CUDA default
+                )
+                self.logger.info("Local model loaded successfully on CUDA.")
+                self._log_gpu_memory()
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    self.logger.warning(f"CUDA out of memory: {str(e)}. Falling back to CPU.")
+                    # Clear CUDA cache before retrying
+                    torch.cuda.empty_cache()
+                    self.local_model = AutoModelForCausalLM.from_pretrained(
+                        "google/gemma-3-1b-it",
+                        token=self.hf_token,
+                        quantization_config=None,  # Disable quantization for CPU
+                        torch_dtype=torch.float32,  # Use FP32 on CPU
+                        device_map="cpu"
+                    )
+                    self.logger.info("Local model loaded successfully on CPU.")
+                else:
+                    raise
         except Exception as e:
             self.logger.error(f"Failed to load local model: {str(e)}")
             self.local_model = None
@@ -61,8 +82,6 @@ class InferenceEngine:
             allocated = torch.cuda.memory_allocated() / 1024**2
             reserved = torch.cuda.memory_reserved() / 1024**2
             self.logger.info(f"GPU Memory - Allocated: {allocated:.2f} MiB, Reserved: {reserved:.2f} MiB")
-
-    # In app/inference/engine.py
 
     def predict(self, prompt: str, is_casual_chat: bool = False, conversation_history: list = None, use_xai_api: bool = True) -> tuple[str, str]:
         """Generate a response, returning both local and final responses."""
@@ -83,9 +102,6 @@ class InferenceEngine:
                 return local_response, local_response
         return local_response, local_response
 
-    # In app/inference/engine.py
-
-
     def _predict_local(self, prompt: str, is_casual_chat: bool = False, conversation_history: list = None) -> str:
         if not self.local_model or not self.local_tokenizer:
             self.logger.error("Local model not loaded.")
@@ -96,7 +112,8 @@ class InferenceEngine:
             if conversation_history:
                 for entry in conversation_history[-3:]:
                     input_text += f"\nUser: {entry['prompt']}\nGrok Jr.: {entry['response']}"
-            inputs = self.local_tokenizer(input_text, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+            device = "cuda" if torch.cuda.is_available() and self.local_model.device.type == "cuda" else "cpu"
+            inputs = self.local_tokenizer(input_text, return_tensors="pt").to(device)
             outputs = self.local_model.generate(
                 **inputs,
                 max_new_tokens=50,
@@ -106,9 +123,8 @@ class InferenceEngine:
                 do_sample=True
             )
             response = self.local_tokenizer.decode(outputs[0], skip_special_tokens=True)
-            # Extract only the generated response
             response = response.split("User:")[-1].strip().split("\n")[0]
-            if response.lower() == prompt.lower():  # Avoid echoing prompt
+            if response.lower() == prompt.lower():
                 response = "Hey there!" if is_casual_chat else "Processing skill request..."
             self.logger.info(f"Local model response: {response}")
             self._log_gpu_memory()
@@ -118,21 +134,17 @@ class InferenceEngine:
             return "Error: Unable to generate response locally."
 
     def _predict_xai_with_local(self, prompt: str, local_response: str, is_casual_chat: bool = False, conversation_history: list = None) -> str:
-        """Relay prompt and local inference to Grok for merging."""
         headers = {
             "Authorization": f"Bearer {self.xai_api_key}",
             "Content-Type": "application/json"
         }
-        # Use skill message if autonomous or not casual, otherwise casual
         system_message = self.system_message_skill if self.is_autonomous or not is_casual_chat else self.system_message_casual
-
         messages = [{"role": "system", "content": system_message}]
         if conversation_history:
             for entry in conversation_history:
                 messages.append({"role": "user", "content": entry["prompt"]})
                 messages.append({"role": "assistant", "content": entry["response"]})
         messages.append({"role": "user", "content": f"User prompt: {prompt}\nLocal inference: {local_response}"})
-
         data = {"model": "grok-2-1212", "messages": messages}
         response = requests.post(self.grok_url, headers=headers, json=data)
         response.raise_for_status()
@@ -142,10 +154,10 @@ class InferenceEngine:
         return merged_response
 
     def cleanup(self):
-        """Unload the model and free GPU memory."""
         if self.local_model is not None:
             self.logger.info("Unloading local model...")
             self.local_model = None
             self.local_tokenizer = None
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             self.logger.info("GPU memory freed.")
