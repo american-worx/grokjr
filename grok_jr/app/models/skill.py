@@ -1,12 +1,14 @@
 from pydantic import BaseModel
 from datetime import datetime
+from typing import Optional
 
 class Skill(BaseModel):
-    id: int | None = None
+    id: Optional[int] = None
     name: str
-    description: str | None = None  # Add this
+    description: Optional[str] = None
     instructions: str
-    code: str | None = None
+    code: Optional[str] = None
+    required_params: Optional[str] = None  # JSON string, e.g., '{"task": "str", "duration": "int"}'
     timestamp: datetime = datetime.now()
     acquired: str = "false"
 

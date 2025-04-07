@@ -1,7 +1,6 @@
-# In app/agent/skill_manager.py
-
 import json
 import logging
+import random
 import sqlite3
 import subprocess
 import os
@@ -15,12 +14,11 @@ from grok_jr.app.memory.qdrant_store import QdrantStore
 from grok_jr.app.models.skill import Skill
 from grok_jr.app.agent.ethics_manager import EthicsManager
 from grok_jr.app.dependencies import get_inference_engine, get_qdrant_store_skills
-from grok_jr.app.config.settings import settings  # Ensure this import is present
+from grok_jr.app.config.settings import settings
 from grok_jr.app.config.system_dependencies import SYSTEM_DEPENDENCIES
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 logger = logging.getLogger(__name__)
-
 
 class SkillManager:
     def __init__(self):
@@ -39,10 +37,26 @@ class SkillManager:
             identity = {"name": "Grok Jr.", "purpose": "The Adaptive Skill Master and Continuous Learning Facilitator"}
             self.sqlite_store.store_identity(identity)
             self.logger.info("Identity loaded: Grok Jr., The Adaptive Skill Master and Continuous Learning Facilitator")
-            asyncio.run(self.bootstrap_skills())  # Run async bootstrap
+            asyncio.run(self.bootstrap_skills())
             self.sqlite_store.set_status("core_initialized", "true")
 
+        self._initialize_execution_table()
         self.logger.info("SkillManager initialized.")
+
+    def _initialize_execution_table(self):
+        """Initialize the skill_executions table if not present."""
+        conn = sqlite3.connect(self.sqlite_store.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS skill_executions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                success INTEGER DEFAULT 1  -- 1 for success, 0 for failure
+            )
+        """)
+        conn.commit()
+        conn.close()
 
     def _setup_venv(self):
         if not os.path.exists(self.venv_dir):
@@ -91,6 +105,21 @@ class SkillManager:
                     return True
         return False
 
+
+    async def trigger_evolution(self, speech_module):
+        """Placeholder for evolution trigger—will expand in next step."""
+        self.logger.info("Evolution triggered—scanning codebase.")
+        speech_module.play_message("Evolution underway—stay tuned!")
+
+    def get_status(self):
+        """Return current status for Khan's 'what are you doing?' command."""
+        execution_count = self.sqlite_store.get_execution_count()
+        return f"I’m learning! Executed {execution_count} skills so far."
+
+    def get_execution_count(self):
+        """Helper to get total skill executions."""
+        return self.sqlite_store.get_execution_count()
+
     def fetch_skill_list(self, has_internet: bool) -> list:
         context = self.evaluate_context()
         prompt = (
@@ -113,33 +142,20 @@ class SkillManager:
     def fetch_skill_details(self, skill_name: str, has_internet: bool) -> dict:
         prompt = (
             f"Provide details for the skill '{skill_name}' to support my role as an adaptive skill master. "
-            "Return a JSON object with one of: "
-            "'code' (string with a 'main(params)' function, including imports, fully executable, no placeholders like '# TODO'), "
-            "'skills' (list of skill names if this skill requires sub-skills, e.g., decompose complex skills), or "
-            "'instructions' (string, only if no code or sub-skills apply). "
-            "Prioritize 'code' or 'skills' over 'instructions'. Provide only the JSON object, no additional text."
+            "Return a JSON object with: "
+            "'code' (string with a 'main(params)' function, fully executable, no placeholders), "
+            "'required_params' (JSON string of param names and types, e.g., '{\"task\": \"str\", \"duration\": \"int\"}'), "
+            "and optionally 'instructions' (string). Prioritize 'code' and 'required_params'."
         )
         _, xai_response = self.inference_engine.predict(prompt, use_xai_api=has_internet)
         try:
             cleaned_response = re.sub(r'```json\s*|\s*```', '', xai_response.strip())
             skill_details = json.loads(cleaned_response)
             self.logger.info(f"Fetched details for '{skill_name}': {skill_details}")
-            if "skills" in skill_details:
-                for sub_skill in skill_details["skills"]:
-                    self.store_skill_name(sub_skill)
             return skill_details if isinstance(skill_details, dict) else {}
         except:
             self.logger.warning(f"Invalid skill details response: {xai_response}")
-            try:
-                skill_details = json.loads(xai_response.strip())
-                self.logger.info(f"Fallback parsed details for '{skill_name}': {skill_details}")
-                if "skills" in skill_details:
-                    for sub_skill in skill_details["skills"]:
-                        self.store_skill_name(sub_skill)
-                return skill_details if isinstance(skill_details, dict) else {}
-            except:
-                self.logger.error(f"Failed all parsing attempts for '{skill_name}': {xai_response}")
-                return {}
+            return {}
 
     def store_skill_name(self, skill_name: str):
         existing_skill = self.sqlite_store.get_skill(skill_name)
@@ -148,7 +164,7 @@ class SkillManager:
             new_skill_name = f"skill_{skill_id:03d}"
             skill_dict = {
                 "name": new_skill_name,
-                "description": skill_name,  # Store original name here
+                "description": skill_name,
                 "instructions": "Pending acquisition",
                 "code": None,
                 "timestamp": datetime.now().isoformat(),
@@ -179,12 +195,10 @@ class SkillManager:
 
     async def auto_acquire(self, skill_name: str, has_internet: bool, parent_skill: str = None):
         cycle_count = int(self.sqlite_store.get_status("acquisition_cycle"))
-        # Remove cycle limit for bootstrap; rely on caller to manage
         if not skill_name:
             self.logger.info("No skill provided—pausing.")
             return False
 
-        # Check if this is a numbered skill and get its description
         skill_data = self.sqlite_store.get_skill(skill_name)
         if skill_data and skill_data["description"]:
             skill_name_to_fetch = skill_data["description"]
@@ -196,7 +210,6 @@ class SkillManager:
             self.logger.info(f"Skipping '{skill_name_to_fetch}' due to invalid details.")
             return False
 
-        # Use existing skill name if updating, else generate new
         new_skill_name = skill_name if skill_data else f"skill_{self.sqlite_store.get_next_skill_id():03d}"
 
         if "code" in details:
@@ -257,24 +270,21 @@ class SkillManager:
         conn.commit()
         conn.close()
     
-        # Confirm completion
         pending_count = len(self.get_pending_skills())
         self.logger.info(f"Bootstrap completed: {10 - pending_count} skills acquired, {pending_count} pending.")
 
-    # Ensure acquire_skill uses description
     def acquire_skill(self, skill: Skill):
         self.logger.info(f"Acquiring skill '{skill.name}'...")
         existing_skill = self.sqlite_store.get_skill(skill.name)
+        skill_dict = skill.dict()
+        skill_dict["timestamp"] = skill_dict["timestamp"].isoformat()
+        skill_dict["required_params"] = skill_dict.get("required_params", "{}")  # Default to empty JSON
         if existing_skill:
             self.logger.info(f"Skill '{skill.name}' exists—updating.")
-            skill_dict = skill.dict()
             skill_dict["id"] = existing_skill["id"]
-            skill_dict["timestamp"] = skill_dict["timestamp"].isoformat()
             skill_dict["acquired"] = existing_skill.get("acquired", "false")
             self.sqlite_store.update_skill(skill_dict)
         else:
-            skill_dict = skill.dict()
-            skill_dict["timestamp"] = skill_dict["timestamp"].isoformat()
             skill_dict["acquired"] = "false"
             skill_id = self.sqlite_store.add_skill(skill_dict)
             skill_dict["id"] = skill_id
@@ -282,13 +292,78 @@ class SkillManager:
         self.qdrant_store.add_embedding(embedding_text, skill_dict)
         self.logger.info(f"Skill '{skill.name}' stored.")
 
+    def generate_test_params(self, skill_name: str) -> dict:
+        """Generate test params from skill's required_params."""
+        skill = self.sqlite_store.get_skill(skill_name)
+        if skill and skill["required_params"]:
+            try:
+                required = json.loads(skill["required_params"])
+                params = {}
+                for param, param_type in required.items():
+                    if param_type == "str":
+                        params[param] = "test_" + param
+                    elif param_type == "int":
+                        params[param] = 5
+                    elif param_type == "list":
+                        params[param] = ["test_item"]
+                    elif param_type == "dict":
+                        params[param] = {"key": "value"}
+                self.logger.debug(f"Generated test params for '{skill_name}': {params}")
+                return params
+            except json.JSONDecodeError:
+                self.logger.warning(f"Invalid required_params for '{skill_name}': {skill['required_params']}")
+        self.logger.debug(f"No required_params for '{skill_name}', using default.")
+        return {"input": "default_test"}
 
+    async def learning_loop(self, speech_module):
+        """Background loop for proactive learning and evolution."""
+        self.logger.info("Entering learning loop.")
+        while speech_module.is_autonomous:
+            self.logger.debug("Learning loop cycle started.")
+            try:
+                self.logger.info("Fetching acquired skills...")
+                skills = self.sqlite_store.query_sql("SELECT name, description, instructions, code, required_params FROM skills WHERE acquired = 'true'")
+                self.logger.debug(f"Found {len(skills)} acquired skills: {[s['name'] for s in skills]}")
+                if skills:
+                    skill = random.choice(skills)
+                    skill_obj = Skill(
+                        name=skill["name"],
+                        description=skill["description"],
+                        instructions=skill["instructions"],
+                        code=skill["code"],
+                        required_params=skill["required_params"],
+                        timestamp=datetime.now()
+                    )
+                    self.logger.info(f"Selected skill: {skill['name']}")
+                    params = self.generate_test_params(skill["name"])
+                    result = await self.apply(skill_obj, params=params, user_permission=True, ethics_approved=True)
+                    success = 1 if result and "PERMISSION_REQUIRED" not in result and "ETHICS_WARNING" not in result and "failed" not in result.lower() else 0
+                    self.sqlite_store.add_skill_execution(skill["name"], success)
+                    self.logger.info(f"Ran '{skill['name']}'—result: {result[:50]}...")
+                    self.logger.info(f"Skill '{skill['name']}' console output: {result}")
+                    speech_module.play_message(f"Ran '{skill['name']}'—result: {result[:50]}...")
+                else:
+                    self.logger.info("No acquired skills found to practice.")
+                    speech_module.play_message("No skills to practice—say 'acquire skill test_skill' to add one!")
 
-    
+                execution_count = self.sqlite_store.get_execution_count()
+                self.logger.debug(f"Execution count: {execution_count}")
+                if execution_count >= 50:
+                    self.logger.info("Triggering evolution at 50 executions.")
+                    speech_module.play_message("Hit 50 runs—time to evolve!")
+                    await self.trigger_evolution(speech_module)
+                    self.sqlite_store.reset_execution_count()
 
+                self.logger.debug("Sleeping for 10 seconds...")
+                await asyncio.sleep(10)
+            except Exception as e:
+                self.logger.error(f"Learning loop error: {str(e)}")
+                speech_module.play_message(f"Oops, hit a snag: {str(e)[:50]}—keeping on!")
+                await asyncio.sleep(10)
+    # Remaining methods unchanged (kept for continuity)
     def search_skill(self, skill_name: str) -> Skill | None:
         self.logger.info(f"Searching for skill '{skill_name}' in local storage...")
-        skill_data = self.sqlite_store.get_skill(skill_name)  # Check by name first
+        skill_data = self.sqlite_store.get_skill(skill_name)
         if skill_data:
             self.logger.info(f"Found skill '{skill_name}' in local storage.")
             return Skill(**skill_data)
@@ -308,8 +383,8 @@ class SkillManager:
                     self.logger.warning(f"Incomplete code for '{skill_name}' on attempt {attempt + 1}.")
                     continue
                 skill = Skill(
-                    name=f"skill_{self.sqlite_store.get_next_skill_id()}",  # Generate ID
-                    description=skill_name,  # Store original input as description
+                    name=f"skill_{self.sqlite_store.get_next_skill_id()}",
+                    description=skill_name,
                     instructions=skill_dict["instructions"],
                     code=skill_dict.get("code"),
                     timestamp=datetime.now()
@@ -383,8 +458,6 @@ class SkillManager:
         context_parts.append(f"os_{platform.system().lower()}")
         return "_".join(context_parts)
 
-    def generate_test_params(self, skill_name: str) -> dict:
-        return {"input": "default_test"}
 
     def mark_skill_unverified(self, skill_name: str):
         self.sqlite_store.set_status(f"{skill_name}_verified", "false")
@@ -404,7 +477,7 @@ class SkillManager:
             return "No code available to execute."
 
         self.logger.info(f"Applying skill '{skill.name}' with params: {params}...")
-        if settings.SWARM_MODE and self.swarm_manager:  # This line should now work
+        if settings.SWARM_MODE and self.swarm_manager:
             task = {"skill": skill.name, "params": params or {}}
             result = await self.swarm_manager.delegate_task(task)
             if result == "NO_AGENTS_AVAILABLE":
@@ -425,7 +498,6 @@ class SkillManager:
                 return f"Skill execution failed: Could not install dependencies {dependencies}."
 
             params_json = json.dumps(params or {})
-            # Check if code defines a class with a main method
             if "class " in skill.code and "def main(self, params)" in skill.code:
                 class_name = re.search(r"class (\w+):", skill.code).group(1)
                 script_code = (
@@ -461,7 +533,7 @@ class SkillManager:
         except Exception as e:
             self.logger.error(f"Failed to apply skill: {str(e)}")
             return f"Failed to apply skill: {str(e)}"
-        
+
     def improve(self, skill: Skill, feedback: str) -> Skill:
         self.logger.info(f"Improving skill '{skill.name}' with feedback: {feedback}")
         try:

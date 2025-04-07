@@ -1,5 +1,3 @@
-# In app/memory/sqlite_store.py
-
 import sqlite3
 from datetime import datetime
 import logging
@@ -27,16 +25,17 @@ class SQLiteStore:
                 local_response TEXT,
                 response TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                agent_id TEXT  -- Optional, for swarm interactions
+                agent_id TEXT
             )
         """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS skills (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE,
-                description TEXT,  
+                description TEXT,
                 instructions TEXT,
                 code TEXT,
+                required_params TEXT,  -- JSON string, e.g., '{"task": "str", "duration": "int"}'
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 acquired TEXT DEFAULT 'false'
             )
@@ -45,22 +44,28 @@ class SQLiteStore:
             CREATE TABLE IF NOT EXISTS agents (
                 agent_id TEXT PRIMARY KEY,
                 role TEXT,
-                status TEXT,  -- "online" or "offline"
-                last_seen TEXT  -- ISO timestamp
+                status TEXT,
+                last_seen TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS skill_executions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                success INTEGER DEFAULT 1
             )
         """)
         conn.commit()
         conn.close()
 
     def get_next_skill_id(self) -> int:
-        """Get the next available skill ID by finding the max ID and incrementing."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT MAX(id) FROM skills")
         max_id = cursor.fetchone()[0]
         conn.close()
         return (max_id or 0) + 1
-    
 
     def store_identity(self, identity: dict):
         conn = sqlite3.connect(self.db_path)
@@ -146,9 +151,9 @@ class SQLiteStore:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR IGNORE INTO skills (name, description, instructions, code, timestamp, acquired)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (skill["name"], skill.get("description"), skill.get("instructions"), skill.get("code"), skill["timestamp"], skill.get("acquired", "false")))
+            INSERT OR IGNORE INTO skills (name, description, instructions, code, required_params, timestamp, acquired)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (skill["name"], skill.get("description"), skill.get("instructions"), skill.get("code"), skill.get("required_params"), skill["timestamp"], skill.get("acquired", "false")))
         skill_id = cursor.lastrowid
         conn.commit()
         conn.close()
@@ -159,20 +164,20 @@ class SQLiteStore:
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE skills
-            SET instructions = ?, code = ?, timestamp = ?, acquired = ?
+            SET instructions = ?, code = ?, required_params = ?, timestamp = ?, acquired = ?
             WHERE name = ?
-        """, (skill.get("instructions"), skill.get("code"), skill["timestamp"], skill.get("acquired", "false"), skill["name"]))
+        """, (skill.get("instructions"), skill.get("code"), skill.get("required_params"), skill["timestamp"], skill.get("acquired", "false"), skill["name"]))
         conn.commit()
         conn.close()
 
     def get_skill(self, skill_name: str) -> dict | None:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, description, instructions, code, timestamp, acquired FROM skills WHERE name = ?", (skill_name,))
+        cursor.execute("SELECT id, name, description, instructions, code, required_params, timestamp, acquired FROM skills WHERE name = ?", (skill_name,))
         result = cursor.fetchone()
         conn.close()
         if result:
-            timestamp = result[5]
+            timestamp = result[6]  # Adjusted index
             if isinstance(timestamp, str):
                 try:
                     timestamp = datetime.fromisoformat(timestamp)
@@ -180,17 +185,18 @@ class SQLiteStore:
                     timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
             elif timestamp is None:
                 timestamp = datetime.now()
-            
             return {
                 "id": result[0],
                 "name": result[1],
                 "description": result[2],
                 "instructions": result[3],
                 "code": result[4],
+                "required_params": result[5],  # JSON string
                 "timestamp": timestamp,
-                "acquired": result[6]
+                "acquired": result[7]
             }
         return None
+
     def delete_skill(self, skill_name: str):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -212,3 +218,33 @@ class SQLiteStore:
 
     def is_initialized(self) -> bool:
         return self.get_status("core_initialized") == "true"
+
+    def add_skill_execution(self, skill_name: str, success: int):
+        """Add a skill execution record."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO skill_executions (skill_name, timestamp, success) VALUES (?, ?, ?)",
+            (skill_name, datetime.now().isoformat(), success)
+        )
+        conn.commit()
+        conn.close()
+        logger.info(f"Logged execution for '{skill_name}', success={success}")
+
+    def get_execution_count(self) -> int:
+        """Get total number of skill executions."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM skill_executions")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+    
+    def reset_execution_count(self):
+        """Reset skill_executions table for testing—remove in production."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM skill_executions")
+        conn.commit()
+        conn.close()
+        logger.info("Reset skill_executions count.")
